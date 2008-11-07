@@ -1,0 +1,281 @@
+#!/usr/bin/env python
+
+import xmmsclient
+import xmmsclient.glib
+import dbus
+import dbus.service
+from dbus.mainloop.glib import DBusGMainLoop
+import gobject
+
+MPRIS = "org.mpris.xmms2"
+MEDIAPLAYER = "org.freedesktop.MediaPlayer"
+
+# Helper Hack to make async calls to xmms2 possible,
+# Used as I know of no way to store additional data in a XMMSResult
+dbus_cb_func = {}
+
+# Some general functions
+def program_error (cb_func, Exception):
+	cb_func ("Internal XMMS2-MPRIS error: " + str (Exception))
+
+#Placeholder for now TODO:implement later
+def convert_dict (dict):
+	# location is mandatory, so no trying and catching
+	ret_dict = {'location':dict['url']}
+
+	key_list = ['title', 'artist', 'album', 'genre', 'comment' ]
+	for key in key_list:
+		try: ret_dict[key] = dict[key]
+		except KeyError: pass
+
+	# add later (mpris, xmms2): ('rating', ?), ('year', 'date'), ('date', ?)
+	# ('arturl', ?)
+	key_list = [('tracknumber', 'tracknr'), ('mtime', 'duration'), \
+	            ('audio-bitrate', 'bitrate'), \
+	            ('audio-samplerate', 'samplerate')]
+	for mpris_key, xmms2_key in key_list:
+		try: ret_dict[mpris_key] = dict[xmms2_key]
+		except KeyError: pass
+
+	try: ret_dict['time'] = dict['duration'] /1000
+	except KeyError: pass
+
+	return ret_dict
+
+
+
+
+# MPRIS '/' handler class
+class mpris_root (dbus.service.Object):
+	def __init__ (self):
+		dbus.service.Object.__init__ (self, dbus.SessionBus(), "/")
+
+	@dbus.service.method (MEDIAPLAYER, in_signature='', out_signature='s')
+	def Identity (self):
+		return str("XMMS2 MPRIS client ver. 0.0.1")
+
+	@dbus.service.method (MEDIAPLAYER, in_signature='', out_signature='')
+	def quit (self):
+		client.xmms2.quit ()
+
+	@dbus.service.method (MEDIAPLAYER, in_signature='', out_signature='qq')
+	def MprisVersion (self):
+		return (0,0)
+
+
+
+
+# MPRIS "/TrackList" handler class
+class mpris_TrackList (dbus.service.Object):
+	def __init__ (self):
+		dbus.service.Object.__init__ (self, dbus.SessionBus(), "/TrackList")
+
+	# TODO:
+	#@dbus.service.method (MEDIAPLAYER, in_signature="i")
+	def GetMetadata  (self, position):
+		pass
+
+	#TODO:
+	def GetCurrentTrack (self):
+		pass
+
+	#TODO:
+	def GetLength (self):
+		pass
+
+	#TODO:
+	def AddTrack (self, uri, play_now):
+		pass
+
+	#TODO
+	def DelTrack (self, pos):
+		pass
+
+	#TODO
+	def SetLoop (self, loop):
+		pass
+
+	#TODO: currently not possible, because sorting won't work
+	def SetRandom (self, random):
+		pass
+
+	#Signals
+	def TrackListChange (self):
+		pass
+
+
+
+
+# MPRIS "/Player" handler class
+class mpris_Player (dbus.service.Object):
+	def __init__ (self, xmms2):
+		dbus.service.Object.__init__ (self, dbus.SessionBus(), "/Player")
+		self.onechannel = False # TODO: fetch information about channels
+		self.current_id = -1 # will be set later,
+		xmms2.playback_current_id (self._cb_current_id)
+		xmms2.broadcast_playback_current_id (self._cb_current_id)
+		xmms2.broadcast_medialib_entry_changed(self._cb_entry_changed)
+
+	@dbus.service.method (MEDIAPLAYER)
+	def Next (self):
+		client.xmms2.playlist_set_next_rel (1)
+		client.xmms2.playback_tickle ()
+
+	@dbus.service.method (MEDIAPLAYER)
+	def Pref (self):
+		client.xmms2.playlist_set_next_rel (-1)
+		client.xmms2.playback_tickle ()
+
+	@dbus.service.method (MEDIAPLAYER)
+	def Pause (self):
+		client.xmms2.playback_pause ()
+
+	@dbus.service.method (MEDIAPLAYER)
+	def Stop (self):
+		client.xmms2.playback_stop ()
+
+	@dbus.service.method (MEDIAPLAYER)
+	def Play (self):
+		client.xmms2.playback_start ()
+
+	#TODO
+	#@dbus.service.method (MEDIAPLAYER, in_signature='b'
+	def Repeat(self, repeat):
+		pass
+
+	#TODO
+	@dbus.service.method (MEDIAPLAYER, out_signature='iiii')
+	def GetStatus(self):
+		return (0,0,0,0)
+		pass
+
+
+	@dbus.service.method (MEDIAPLAYER, out_signature='a{sv}',
+	                      async_callbacks=('cb_val', 'cb_err'))
+	def GetMetadata(self, cb_val, cb_err):
+		ret = client.xmms2.medialib_get_info (self.current_id, \
+		                                      self._cb_GetMetadata)
+		dbus_cb_func[ret] = (cb_val, cb_err)
+
+	def _cb_GetMetadata (self, ret):
+		cb_val, cb_err = dbus_cb_func.pop (ret)
+		try:
+			cb_val (convert_dict (ret.value ()))
+		except Exception, err:
+			program_error (cb_err, err)
+
+
+	#TODO
+	@dbus.service.method (MEDIAPLAYER, out_signature='i')
+	def GetCaps (self):
+		return 0xFF
+
+	@dbus.service.method (MEDIAPLAYER, in_signature='i')
+	def VolumeSet (self, volume):
+		if (self.onechannel):
+			client.xmms2.playback_volume_set ("master", volume)
+		else:
+			client.xmms2.playback_volume_set ("left", volume)
+			client.xmms2.playback_volume_set ("right", volume)
+
+
+	@dbus.service.method (MEDIAPLAYER, out_signature='i',
+	                      async_callbacks=('cb_val', 'cb_err'))
+	def VolumeGet (self, cb_val, cb_err):
+		res = client.xmms2.playback_volume_get (self._cb_VolumeGet)
+		dbus_cb_func[res] = (cb_val, cb_err)
+
+	def _cb_VolumeGet (self, res):
+		cb_val, cb_err = dbus_cb_func.pop (res)
+		try:
+			res = res.value ()
+			if (res.has_key ('master')):
+				self.onechannel = True
+				cb_val (res['master'])
+			else:
+				self.onechannel = False
+				cb_val ((res['left']+res['right'])/2)
+		except KeyError:
+			cb_err("could not get volume, volume keys: " + str(res.keys ()))
+		except Exception, err:
+			program_error (cb_err, err)
+
+
+	@dbus.service.method (MEDIAPLAYER, in_signature='i')
+	def PositionSet (self, mtime):
+		client.xmms2.playback_seek_ms (mtime)
+
+
+	@dbus.service.method (MEDIAPLAYER, out_signature='i',
+	                      async_callbacks=('cb_val', 'cb_err'))
+	def PositionGet (self, cb_val, cb_err):
+		res = client.xmms2.playback_playtime (self._cb_PositionGet)
+		dbus_cb_func[res] = (cb_val, cb_err)
+
+	def _cb_PositionGet (self, res):
+		cb_val, cb_err = dbus_cb_func.pop(res)
+		try:
+			cb_val (res.value ())
+		except Exception, err:
+			program_error (cb_err, err)
+
+	#Signals
+	@dbus.service.signal (MEDIAPLAYER, signature='a{sv}')
+	def TrackChange (self, var):
+		pass
+
+	#TODO
+	@dbus.service.signal (MEDIAPLAYER, signature='(iiii)')
+	def StatusChange (self, data):
+		pass
+
+	#TODO
+	@dbus.service.signal (MEDIAPLAYER, signature='i')
+	def CapsChange (self, data):
+		pass
+
+	# Callbacks emitting used for emitting the dbus signals
+	def _cb_current_id (self, res):
+		self.current_id = res.value ()
+		client.xmms2.medialib_get_info (self.current_id, self._cb_mlib_data)
+
+	def _cb_entry_changed (self, res):
+		if (self.current_id == res.value ()):
+			client.xmms2.medialib_get_info (self.current_id, self._cb_mlib_data)
+
+	def _cb_mlib_data (self, res):
+		res = res.value ()
+		self.TrackChange (convert_dict (res))
+
+
+
+
+class Xmms2MPRIS:
+	def __init__(self):
+		# The glib mainloop is used to glue the xmms2 and the dbus connection
+		# together, because they both provide their own mainloop and I'm
+		# too lazy to write a sprecial connector
+		self.ml = gobject.MainLoop(None, False)
+		self.xmms2 = xmmsclient.XMMS('MPRIS-Connector')
+		#connect to the xmms2 server, it should be running as it started us
+		#TODO: perhaps this could make use of a bi more error handling
+		try:
+			self.xmms2.connect(disconnect_func = self._on_server_quit)
+		except IOError, detail:
+			print 'Connection failed:', detail
+			sys.exit(1)
+		self.xmmsconn = xmmsclient.glib.GLibConnector(self.xmms2)
+
+		self.dbusconn = DBusGMainLoop(set_as_default=True)
+		dbus.SessionBus().request_name (MPRIS);
+
+		self.mpris_root = mpris_root ()
+		self.mpris_tracklist = mpris_TrackList ()
+		self.mpris_player = mpris_Player (self.xmms2)
+
+	def	_on_server_quit(self, result):
+		self.ml.quit ()
+
+
+client = Xmms2MPRIS()
+client.ml.run ()
