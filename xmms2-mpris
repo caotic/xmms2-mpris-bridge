@@ -2,6 +2,7 @@
 
 import xmmsclient
 import xmmsclient.glib
+from xmmsclient.consts import *
 import dbus
 import dbus.service
 from dbus.mainloop.glib import DBusGMainLoop
@@ -9,6 +10,28 @@ import gobject
 
 MPRIS = "org.mpris.xmms2"
 MEDIAPLAYER = "org.freedesktop.MediaPlayer"
+
+NONE                 = 0
+CAN_GO_NEXT          = 1 << 0
+CAN_GO_PREV          = 1 << 1
+CAN_PAUSE            = 1 << 2
+CAN_PLAY             = 1 << 3
+CAN_SEEK             = 1 << 4
+CAN_PROVIDE_METADATA = 1 << 5
+CAN_HAS_TRACKLIST    = 1 << 6
+
+DBUS_PLAY  = 0
+DBUS_PAUSE = 1
+DBUS_STOP  = 2
+
+DBUS_RANDOM_OFF = 0
+DBUS_RANDOM_ON  = 1
+
+DBUS_REPEAT_CURRENT_OFF = 0
+DBUS_REPEAT_CURRENT_ON  = 1
+
+DBUS_REPEAT_PL_OFF = 0
+DBUS_REPEAT_PL_ON  = 1
 
 # Helper Hack to make async calls to xmms2 possible,
 # Used as I know of no way to store additional data in a XMMSResult
@@ -18,7 +41,7 @@ dbus_cb_func = {}
 def program_error (cb_func, Exception):
 	cb_func ("Internal XMMS2-MPRIS error: " + str (Exception))
 
-#Placeholder for now TODO:implement later
+#TODO: Add additional fields as soon as xmms2 provides them
 def convert_dict (dict):
 	# location is mandatory, so no trying and catching
 	ret_dict = {'location':dict['url']}
@@ -67,54 +90,110 @@ class mpris_root (dbus.service.Object):
 
 # MPRIS "/TrackList" handler class
 class mpris_TrackList (dbus.service.Object):
-	def __init__ (self):
+	def __init__ (self, xmms2):
 		dbus.service.Object.__init__ (self, dbus.SessionBus(), "/TrackList")
+		self.playlist = [] # will be set afterwards
+		self.current_pos = 0
+		self.active_name =""
+		xmms2.playlist_current_active (self._cb_handle_pls_name)	
+		xmms2.broadcast_playlist_loaded (cb=self._cb_handle_pls_name)
+#		xmms2.playlist_list_entries (cb=self._cb_handle_playlist) #done in _cb_handle_pls_name
+		xmms2.broadcast_playlist_changed (cb=self._cb_fetch_playlist)
+#		xmms2.playlist_current_pos (cb=self._cb_handle_current_pos) # done in _cb_handle_playlist
+		xmms2.broadcast_playlist_current_pos (cb=self._cb_handle_current_pos)
 
-	# TODO:
-	#@dbus.service.method (MEDIAPLAYER, in_signature="i")
-	def GetMetadata  (self, position):
-		pass
+	# FIXME: doesn't work yet
+	@dbus.service.method (MEDIAPLAYER, in_signature='i', out_signature='a{sv}', \
+	                       async_callbacks=('cb_val', 'cb_err'))
+	def GetMetadata (self, pos, cb_val, cb_err):
+		res = client.xmms2.medialib_get_info (id=self.playlist[pos], cb=self._cb_GetMetadata)
+		dbus_cb_func[res] = (cb_val, cb_err)
 
-	#TODO:
+	def _cb_GetMetadata (self, res):
+		cb_val, cb_err = dbus_cb_func.pop(res)
+		try:
+			cb_val (convert_dict (res.value ()))
+		except Exception, err:
+			cb_err (str (err))
+
+	@dbus.service.method (MEDIAPLAYER, out_signature="i")
 	def GetCurrentTrack (self):
-		pass
+		return self.current_pos
 
-	#TODO:
+	@dbus.service.method (MEDIAPLAYER, out_signature="i")
 	def GetLength (self):
-		pass
+		return len (self.playlist)
 
 	#TODO:
 	def AddTrack (self, uri, play_now):
 		pass
 
-	#TODO
+	@dbus.service.method (MEDIAPLAYER, in_signature="i")
 	def DelTrack (self, pos):
-		pass
+		client.xmms2.playlist_remove_entry (pos)
 
 	#TODO
+	@dbus.service.method (MEDIAPLAYER, in_signature="b")
 	def SetLoop (self, loop):
 		pass
 
 	#TODO: currently not possible, because sorting won't work
+	@dbus.service.method (MEDIAPLAYER, in_signature="b")
 	def SetRandom (self, random):
 		pass
 
 	#Signals
-	def TrackListChange (self):
+	@dbus.service.signal (MEDIAPLAYER, signature='i')
+	def TrackListChange (self, len):
 		pass
 
+	# Just fetch the complete playlist whenever it might have canged.
+	# This could be optimized, but I'll leave that for sometime later
+	def _cb_fetch_playlist (self, res):
+		client.xmms2.playlist_list_entries (cb=self._cb_handle_playlist)	
 
+	def _cb_handle_playlist (self, res):
+		list = res.value ()		
+		# This method is also called if another playlist is loaded.
+		# We handle playlists with the same entries as the same playlist,
+		# even if their names differ
+		client.xmms2.playlist_current_pos (cb=self._cb_handle_current_pos)
+		if (self.playlist != list):	
+			self.playlist = list
+			self.TrackListChange (len (list))
+
+	def _cb_handle_pls_name (self, res):
+		name = res.value ()
+		if self.active_name != name:
+			self.active_name = name
+			client.xmms2.playlist_list_entries (cb=self._cb_handle_playlist)
+			
+
+	def _cb_handle_current_pos (self, res):
+		pos_d = res.value ()
+		if self.active_name == pos_d['name']:
+			self.current_pos = pos_d['position']
 
 
 # MPRIS "/Player" handler class
 class mpris_Player (dbus.service.Object):
+	# TODO: react to streams: CAN_SEEK = false, CAN_PAUSE = false 
 	def __init__ (self, xmms2):
 		dbus.service.Object.__init__ (self, dbus.SessionBus(), "/Player")
-		self.onechannel = False # TODO: fetch information about channels
-		self.current_id = -1 # will be set later,
-		xmms2.playback_current_id (self._cb_current_id)
-		xmms2.broadcast_playback_current_id (self._cb_current_id)
-		xmms2.broadcast_medialib_entry_changed(self._cb_entry_changed)
+		self.onechannel = False # TODO: initialize correctly on stratup
+		self.current_id = 0 # This is also returned by xmms2 if no song is currently set
+		self.playstatus = DBUS_STOP
+		self.randomplay = DBUS_RANDOM_OFF
+		self.current_repeat = DBUS_REPEAT_CURRENT_OFF
+		self.pl_repeat = DBUS_REPEAT_PL_OFF
+		# CAN_SEEK, CAN_PROVIDE_METADATA, CAN_HAS_TRACKLIST will be handled later,
+		# CAN_PAUSE and CAN_PLAY will also need to be handled according to plystatus
+		self.caps = CAN_GO_NEXT | CAN_GO_PREV | CAN_PAUSE | CAN_PLAY
+		xmms2.playback_current_id (cb=self._cb_current_id)
+		xmms2.broadcast_playback_current_id (cb=self._cb_current_id)
+		xmms2.broadcast_medialib_entry_changed (cb=self._cb_entry_changed)
+		xmms2.playback_status (cb=self._cb_playback_status)
+		xmms2.broadcast_playback_status (cb=self._cb_playback_status)
 
 	@dbus.service.method (MEDIAPLAYER)
 	def Next (self):
@@ -139,15 +218,13 @@ class mpris_Player (dbus.service.Object):
 		client.xmms2.playback_start ()
 
 	#TODO
-	#@dbus.service.method (MEDIAPLAYER, in_signature='b'
+	@dbus.service.method (MEDIAPLAYER, in_signature='b')
 	def Repeat(self, repeat):
-		pass
+		return False
 
-	#TODO
 	@dbus.service.method (MEDIAPLAYER, out_signature='iiii')
 	def GetStatus(self):
-		return (0,0,0,0)
-		pass
+		return self.build_status ()
 
 
 	@dbus.service.method (MEDIAPLAYER, out_signature='a{sv}',
@@ -160,15 +237,18 @@ class mpris_Player (dbus.service.Object):
 	def _cb_GetMetadata (self, ret):
 		cb_val, cb_err = dbus_cb_func.pop (ret)
 		try:
-			cb_val (convert_dict (ret.value ()))
+			dict = ret.value ()
+			if (dict == None):
+				cb_val ({})
+				return
+			cb_val (convert_dict (dict))
 		except Exception, err:
 			program_error (cb_err, err)
 
 
-	#TODO
 	@dbus.service.method (MEDIAPLAYER, out_signature='i')
 	def GetCaps (self):
-		return 0xFF
+		return self.caps
 
 	@dbus.service.method (MEDIAPLAYER, in_signature='i')
 	def VolumeSet (self, volume):
@@ -224,19 +304,30 @@ class mpris_Player (dbus.service.Object):
 	def TrackChange (self, var):
 		pass
 
-	#TODO
 	@dbus.service.signal (MEDIAPLAYER, signature='(iiii)')
 	def StatusChange (self, data):
 		pass
 
-	#TODO
 	@dbus.service.signal (MEDIAPLAYER, signature='i')
-	def CapsChange (self, data):
+	def CapsChange (self, caps):
 		pass
+
+	# class-internal helpers
+	def build_status (self):
+		return (self.playstatus, self.randomplay, self.current_repeat, self.pl_repeat)
 
 	# Callbacks emitting used for emitting the dbus signals
 	def _cb_current_id (self, res):
 		self.current_id = res.value ()
+		if self.current_id < 1:
+			# mlib id 0 means that no entry is selected, so we also have no metadata 
+			if self.caps & CAN_PROVIDE_METADATA:
+				self.caps &= ~CAN_PROVIDE_METADATA
+				self.CapsChange (self.caps)
+			return
+		if (~self.caps) & CAN_PROVIDE_METADATA:
+			self.caps |= CAN_PROVIDE_METADATA
+			self.CapsChange (self.caps)
 		client.xmms2.medialib_get_info (self.current_id, self._cb_mlib_data)
 
 	def _cb_entry_changed (self, res):
@@ -247,8 +338,19 @@ class mpris_Player (dbus.service.Object):
 		res = res.value ()
 		self.TrackChange (convert_dict (res))
 
-
-
+	def _cb_playback_status (self, res):
+		status = res.value ()
+		# TODO: Modify CAN_PLAY and CAN_PAUSE
+		if (status == PLAYBACK_STATUS_STOP) and (self.playstatus != DBUS_STOP):
+			self.playstatus = DBUS_STOP
+			self.StatusChange (self.build_status ()) 
+		elif (status == PLAYBACK_STATUS_PLAY) and (self.playstatus != DBUS_PLAY):
+			self.playstatus = DBUS_PLAY
+			self.StatusChange (self.build_status ())
+		elif (status == PLAYBACK_STATUS_PAUSE) and (self.playstatus != DBUS_PAUSE):
+			self.playstatus = DBUS_PAUSE	
+			self.StatusChange (self.build_status ())
+			
 
 class Xmms2MPRIS:
 	def __init__(self):
@@ -270,7 +372,7 @@ class Xmms2MPRIS:
 		dbus.SessionBus().request_name (MPRIS);
 
 		self.mpris_root = mpris_root ()
-		self.mpris_tracklist = mpris_TrackList ()
+		self.mpris_tracklist = mpris_TrackList (self.xmms2)
 		self.mpris_player = mpris_Player (self.xmms2)
 
 	def	_on_server_quit(self, result):
