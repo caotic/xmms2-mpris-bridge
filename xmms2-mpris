@@ -11,6 +11,11 @@ import gobject
 MPRIS = "org.mpris.xmms2"
 MEDIAPLAYER = "org.freedesktop.MediaPlayer"
 
+# The name reported to dbus
+DBUS_CLIENTNAME = "XMMS2"
+# The name reported to xmms2, only alphanumeric caracters
+XMMS2_CLIENTNAME = 'MPRIS_connection'
+
 NONE                 = 0
 CAN_GO_NEXT          = 1 << 0
 CAN_GO_PREV          = 1 << 1
@@ -24,6 +29,7 @@ DBUS_PLAY  = 0
 DBUS_PAUSE = 1
 DBUS_STOP  = 2
 
+#FIXME: Those three status informations are not yet implemented
 DBUS_RANDOM_OFF = 0
 DBUS_RANDOM_ON  = 1
 
@@ -75,15 +81,15 @@ class mpris_root (dbus.service.Object):
 
 	@dbus.service.method (MEDIAPLAYER, in_signature='', out_signature='s')
 	def Identity (self):
-		return str("XMMS2 MPRIS client ver. 0.0.1")
+		return DBUS_CLIENTNAME
 
 	@dbus.service.method (MEDIAPLAYER, in_signature='', out_signature='')
-	def quit (self):
+	def Quit (self):
 		client.xmms2.quit ()
 
-	@dbus.service.method (MEDIAPLAYER, in_signature='', out_signature='qq')
+	@dbus.service.method (MEDIAPLAYER, in_signature='', out_signature='(qq)')
 	def MprisVersion (self):
-		return (0,0)
+		return (1, 0)
 
 
 
@@ -188,7 +194,8 @@ class mpris_Player (dbus.service.Object):
 		self.pl_repeat = DBUS_REPEAT_PL_OFF
 		# CAN_SEEK, CAN_PROVIDE_METADATA, CAN_HAS_TRACKLIST will be handled later,
 		# CAN_PAUSE and CAN_PLAY will also need to be handled according to plystatus
-		self.caps = CAN_GO_NEXT | CAN_GO_PREV | CAN_PAUSE | CAN_PLAY
+		self.caps = CAN_GO_NEXT | CAN_GO_PREV | CAN_PAUSE | CAN_PLAY \
+		          | CAN_HAS_TRACKLIST
 		xmms2.playback_current_id (cb=self._cb_current_id)
 		xmms2.broadcast_playback_current_id (cb=self._cb_current_id)
 		xmms2.broadcast_medialib_entry_changed (cb=self._cb_entry_changed)
@@ -222,7 +229,7 @@ class mpris_Player (dbus.service.Object):
 	def Repeat(self, repeat):
 		return False
 
-	@dbus.service.method (MEDIAPLAYER, out_signature='iiii')
+	@dbus.service.method (MEDIAPLAYER, out_signature='(iiii)')
 	def GetStatus(self):
 		return self.build_status ()
 
@@ -358,7 +365,7 @@ class Xmms2MPRIS:
 		# together, because they both provide their own mainloop and I'm
 		# too lazy to write a sprecial connector
 		self.ml = gobject.MainLoop(None, False)
-		self.xmms2 = xmmsclient.XMMS('MPRIS-Connector')
+		self.xmms2 = xmmsclient.XMMS(XMMS2_CLIENTNAME)
 		#connect to the xmms2 server, it should be running as it started us
 		#TODO: perhaps this could make use of a bi more error handling
 		try:
