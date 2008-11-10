@@ -101,14 +101,14 @@ class mpris_TrackList (dbus.service.Object):
 		self.playlist = [] # will be set afterwards
 		self.current_pos = 0
 		self.active_name =""
-		xmms2.playlist_current_active (self._cb_handle_pls_name)	
+		xmms2.playlist_current_active (self._cb_handle_pls_name)
 		xmms2.broadcast_playlist_loaded (cb=self._cb_handle_pls_name)
 #		xmms2.playlist_list_entries (cb=self._cb_handle_playlist) #done in _cb_handle_pls_name
 		xmms2.broadcast_playlist_changed (cb=self._cb_fetch_playlist)
 #		xmms2.playlist_current_pos (cb=self._cb_handle_current_pos) # done in _cb_handle_playlist
 		xmms2.broadcast_playlist_current_pos (cb=self._cb_handle_current_pos)
 
-	# FIXME: doesn't work yet
+
 	@dbus.service.method (MEDIAPLAYER, in_signature='i', out_signature='a{sv}', \
 	                       async_callbacks=('cb_val', 'cb_err'))
 	def GetMetadata (self, pos, cb_val, cb_err):
@@ -130,23 +130,50 @@ class mpris_TrackList (dbus.service.Object):
 	def GetLength (self):
 		return len (self.playlist)
 
-	#TODO:
-	def AddTrack (self, uri, play_now):
-		pass
+	#FIXME: function lies, xmms2 doesn't tell us if adding failed
+	@dbus.service.method (MEDIAPLAYER, in_signature='sb', out_signature="i", \
+	                      async_callbacks=('cb_val', 'cb_err'))
+	def AddTrack (self, url, play_now, cb_val, cb_err):
+		if play_now:
+			res = client.xmms2.playlist_add_url (url, cb=self._cb_AddTrack_now)
+		else:
+			res = client.xmms2.playlist_add_url (url, cb=self._cb_AddTrack)
+		dbus_cb_func[res] = (cb_val, cb_err)
+
+	def _cb_AddTrack (self, res):
+		cb_val, cb_err = dbus_cb_func.pop (res)
+		# TODO: errorchecking, but for now the python bindings seem to be broken
+		cb_val (0)
+
+	def _cb_AddTrack_now (self, res):
+		# FIXME: this function does almost certainly now work correct,
+		# because something in the python bindings doesn't work correctly
+		cb_val, cb_err = dbus_cb_func.pop (res)
+		try:
+			# For now the playlist update will be called after this method
+			# if that changes, the len (self.playlist) has to be adjusted
+			client.xmms2.playlist_set_next (len (self.playlist))
+			client.xmms2.playback_tickle ()
+			# TODO:Error handling
+			cb_val (0)
+		except Exception, err:
+			program_error (cb_err, err)
 
 	@dbus.service.method (MEDIAPLAYER, in_signature="i")
 	def DelTrack (self, pos):
 		client.xmms2.playlist_remove_entry (pos)
 
-	#TODO
 	@dbus.service.method (MEDIAPLAYER, in_signature="b")
 	def SetLoop (self, loop):
-		pass
+		if loop:
+			client.xmms2.configval_set ("playlist.repeat_all", "1")
+		else:
+			client.xmms2.configval_set ("playlist.repeat_all", "0")
 
 	#TODO: currently not possible, because sorting won't work
 	@dbus.service.method (MEDIAPLAYER, in_signature="b")
 	def SetRandom (self, random):
-		pass
+		raise NotImplementedError ("Random play is not yet possible in xmms2")
 
 	#Signals
 	@dbus.service.signal (MEDIAPLAYER, signature='i')
@@ -156,15 +183,15 @@ class mpris_TrackList (dbus.service.Object):
 	# Just fetch the complete playlist whenever it might have canged.
 	# This could be optimized, but I'll leave that for sometime later
 	def _cb_fetch_playlist (self, res):
-		client.xmms2.playlist_list_entries (cb=self._cb_handle_playlist)	
+		client.xmms2.playlist_list_entries (cb=self._cb_handle_playlist)
 
 	def _cb_handle_playlist (self, res):
-		list = res.value ()		
+		list = res.value ()
 		# This method is also called if another playlist is loaded.
 		# We handle playlists with the same entries as the same playlist,
 		# even if their names differ
 		client.xmms2.playlist_current_pos (cb=self._cb_handle_current_pos)
-		if (self.playlist != list):	
+		if (self.playlist != list):
 			self.playlist = list
 			self.TrackListChange (len (list))
 
@@ -173,17 +200,20 @@ class mpris_TrackList (dbus.service.Object):
 		if self.active_name != name:
 			self.active_name = name
 			client.xmms2.playlist_list_entries (cb=self._cb_handle_playlist)
-			
+
 
 	def _cb_handle_current_pos (self, res):
 		pos_d = res.value ()
+		if pos_d == None:
+			self.current_pos = 0
+			return
 		if self.active_name == pos_d['name']:
 			self.current_pos = pos_d['position']
 
 
 # MPRIS "/Player" handler class
 class mpris_Player (dbus.service.Object):
-	# TODO: react to streams: CAN_SEEK = false, CAN_PAUSE = false 
+	# TODO: react to streams: CAN_SEEK = false, CAN_PAUSE = false
 	def __init__ (self, xmms2):
 		dbus.service.Object.__init__ (self, dbus.SessionBus(), "/Player")
 		self.onechannel = False # TODO: initialize correctly on stratup
@@ -192,13 +222,15 @@ class mpris_Player (dbus.service.Object):
 		self.randomplay = DBUS_RANDOM_OFF
 		self.current_repeat = DBUS_REPEAT_CURRENT_OFF
 		self.pl_repeat = DBUS_REPEAT_PL_OFF
-		# CAN_SEEK, CAN_PROVIDE_METADATA, CAN_HAS_TRACKLIST will be handled later,
+		# CAN_SEEK, CAN_PROVIDE_METADATA will be handled later,
 		# CAN_PAUSE and CAN_PLAY will also need to be handled according to plystatus
 		self.caps = CAN_GO_NEXT | CAN_GO_PREV | CAN_PAUSE | CAN_PLAY \
 		          | CAN_HAS_TRACKLIST
 		xmms2.playback_current_id (cb=self._cb_current_id)
 		xmms2.broadcast_playback_current_id (cb=self._cb_current_id)
 		xmms2.broadcast_medialib_entry_changed (cb=self._cb_entry_changed)
+		xmms2.configval_list (cb=self._cb_handle_repeat)
+		xmms2.broadcast_configval_changed (cb=self._cb_repeat_changed)
 		xmms2.playback_status (cb=self._cb_playback_status)
 		xmms2.broadcast_playback_status (cb=self._cb_playback_status)
 
@@ -208,7 +240,7 @@ class mpris_Player (dbus.service.Object):
 		client.xmms2.playback_tickle ()
 
 	@dbus.service.method (MEDIAPLAYER)
-	def Pref (self):
+	def Prev (self):
 		client.xmms2.playlist_set_next_rel (-1)
 		client.xmms2.playback_tickle ()
 
@@ -227,7 +259,10 @@ class mpris_Player (dbus.service.Object):
 	#TODO
 	@dbus.service.method (MEDIAPLAYER, in_signature='b')
 	def Repeat(self, repeat):
-		return False
+		if repeat:
+			client.xmms2.configval_set ("playlist.repeat_one", "1")
+		else:
+			client.xmms2.configval_set ("playlist.repeat_one", "0")
 
 	@dbus.service.method (MEDIAPLAYER, out_signature='(iiii)')
 	def GetStatus(self):
@@ -350,14 +385,44 @@ class mpris_Player (dbus.service.Object):
 		# TODO: Modify CAN_PLAY and CAN_PAUSE
 		if (status == PLAYBACK_STATUS_STOP) and (self.playstatus != DBUS_STOP):
 			self.playstatus = DBUS_STOP
-			self.StatusChange (self.build_status ()) 
+			self.StatusChange (self.build_status ())
 		elif (status == PLAYBACK_STATUS_PLAY) and (self.playstatus != DBUS_PLAY):
 			self.playstatus = DBUS_PLAY
 			self.StatusChange (self.build_status ())
 		elif (status == PLAYBACK_STATUS_PAUSE) and (self.playstatus != DBUS_PAUSE):
-			self.playstatus = DBUS_PAUSE	
+			self.playstatus = DBUS_PAUSE
 			self.StatusChange (self.build_status ())
-			
+
+	def _cb_repeat_changed (self, res):
+		if self._cb_handle_repeat (res):
+			self.StatusChange (self.build_status ())
+		# Continue to emit broadcast
+		return True
+
+	def _cb_handle_repeat (self, res):
+		dict = res.value ()
+		ret = False
+		#FIXME the int (dict) part might break if the value is something like
+		# 'False'
+		try:
+			repeat = int (dict['playlist.repeat_all'])
+			if repeat and (self.pl_repeat == DBUS_REPEAT_PL_OFF):
+				self.pl_repeat = DBUS_REPEAT_PL_ON
+				ret = True
+			elif (not repeat) and  (self.pl_repeat == DBUS_REPEAT_PL_ON):
+				self.pl_repeat = DBUS_REPEAT_PL_OFF
+				ret = True
+		except KeyError: pass
+		try:
+			repeat = int (dict['playlist.repeat_one'])
+			if repeat and (self.current_repeat == DBUS_REPEAT_CURRENT_OFF):
+				self.current_repeat = DBUS_REPEAT_CURRENT_ON
+				ret = True
+			elif (not repeat) and (self.current_repeat == DBUS_REPEAT_CURRENT_ON):
+				self.current_repeat = DBUS_REPEAT_CURRENT_OFF
+				ret = True
+		except KeyError: pass
+		return ret
 
 class Xmms2MPRIS:
 	def __init__(self):
