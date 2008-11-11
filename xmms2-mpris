@@ -1,5 +1,19 @@
 #!/usr/bin/env python
 
+#  xmms2-mpris - MPRIS interface for XMMS2
+#  Copyright (C) Thomas Frauendorfer 2008
+#
+#  This library is free software; you can redistribute it and/or
+#  modify it under the terms of the GNU Lesser General Public
+#  License as published by the Free Software Foundation; either
+#  version 2.1 of the License, or (at your option) any later version.
+#
+#  This library is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+#  Lesser General Public License for more details.
+
+
 import xmmsclient
 import xmmsclient.glib
 from xmmsclient.consts import *
@@ -7,6 +21,7 @@ import dbus
 import dbus.service
 from dbus.mainloop.glib import DBusGMainLoop
 import gobject
+import sys
 
 MPRIS = "org.mpris.xmms2"
 MEDIAPLAYER = "org.freedesktop.MediaPlayer"
@@ -39,10 +54,6 @@ DBUS_REPEAT_CURRENT_ON  = 1
 DBUS_REPEAT_PL_OFF = 0
 DBUS_REPEAT_PL_ON  = 1
 
-# Helper Hack to make async calls to xmms2 possible,
-# Used as I know of no way to store additional data in a XMMSResult
-dbus_cb_func = {}
-
 # Some general functions
 def program_error (cb_func, Exception):
 	cb_func ("Internal XMMS2-MPRIS error: " + str (Exception))
@@ -71,7 +82,21 @@ def convert_dict (dict):
 
 	return ret_dict
 
+class dbusErrorMessage (Exception):
+	def __init__ (self, *args, **kwd):
+		Exception.__init__ (self, *args, **kws)
 
+# Python magic to allow callback fuctions to use 'return' and exceptions
+# TODO: better error formatin
+def dbus_ret (func, cb_val, cb_err):
+	def wrapper (*args, **kws):
+		try:
+			cb_val (func(*args, **kws))
+		except dbusErrorMessage, err:
+			cb_err (str (err))
+		except Exception, err:
+			cb_err ("Internal XMMS2-MPRIS error: " + str (err))
+	return wrapper
 
 
 # MPRIS '/' handler class
@@ -112,15 +137,10 @@ class mpris_TrackList (dbus.service.Object):
 	@dbus.service.method (MEDIAPLAYER, in_signature='i', out_signature='a{sv}', \
 	                       async_callbacks=('cb_val', 'cb_err'))
 	def GetMetadata (self, pos, cb_val, cb_err):
-		res = client.xmms2.medialib_get_info (id=self.playlist[pos], cb=self._cb_GetMetadata)
-		dbus_cb_func[res] = (cb_val, cb_err)
+		client.xmms2.medialib_get_info (id=self.playlist[pos], cb=dbus_ret (self._cb_GetMetadata, cb_val, cb_err))
 
 	def _cb_GetMetadata (self, res):
-		cb_val, cb_err = dbus_cb_func.pop(res)
-		try:
-			cb_val (convert_dict (res.value ()))
-		except Exception, err:
-			cb_err (str (err))
+		return convert_dict (res.value ())
 
 	@dbus.service.method (MEDIAPLAYER, out_signature="i")
 	def GetCurrentTrack (self):
@@ -135,29 +155,32 @@ class mpris_TrackList (dbus.service.Object):
 	                      async_callbacks=('cb_val', 'cb_err'))
 	def AddTrack (self, url, play_now, cb_val, cb_err):
 		if play_now:
-			res = client.xmms2.playlist_add_url (url, cb=self._cb_AddTrack_now)
+			client.xmms2.playlist_add_url (url, cb=dbus_ret (self._cb_AddTrack_now, cb_val, cb_err))
 		else:
-			res = client.xmms2.playlist_add_url (url, cb=self._cb_AddTrack)
-		dbus_cb_func[res] = (cb_val, cb_err)
+			client.xmms2.playlist_add_url (url, cb=dbus_ret (self._cb_AddTrack, cb_val, cb_err))
 
 	def _cb_AddTrack (self, res):
-		cb_val, cb_err = dbus_cb_func.pop (res)
 		# TODO: errorchecking, but for now the python bindings seem to be broken
-		cb_val (0)
+		ret = res.value ()
+		if ret != None:
+			return ret
+		else:
+			return 0
 
 	def _cb_AddTrack_now (self, res):
-		# FIXME: this function does almost certainly now work correct,
+		# FIXME: this function does almost certainly not work correct,
 		# because something in the python bindings doesn't work correctly
-		cb_val, cb_err = dbus_cb_func.pop (res)
-		try:
-			# For now the playlist update will be called after this method
-			# if that changes, the len (self.playlist) has to be adjusted
-			client.xmms2.playlist_set_next (len (self.playlist))
-			client.xmms2.playback_tickle ()
-			# TODO:Error handling
-			cb_val (0)
-		except Exception, err:
-			program_error (cb_err, err)
+		# For now the playlist update will be called after this method
+		# if that changes, the len (self.playlist) has to be adjusted
+		client.xmms2.playlist_set_next (len (self.playlist))
+		client.xmms2.playback_tickle ()
+		# TODO: BetterError handling
+		ret = res.value ()
+		if ret != None:
+			return ret
+		else:
+			return 0
+
 
 	@dbus.service.method (MEDIAPLAYER, in_signature="i")
 	def DelTrack (self, pos):
@@ -273,19 +296,13 @@ class mpris_Player (dbus.service.Object):
 	                      async_callbacks=('cb_val', 'cb_err'))
 	def GetMetadata(self, cb_val, cb_err):
 		ret = client.xmms2.medialib_get_info (self.current_id, \
-		                                      self._cb_GetMetadata)
-		dbus_cb_func[ret] = (cb_val, cb_err)
+		                                      cb=dbus_ret (self._cb_GetMetadata, cb_val, cb_err))
 
 	def _cb_GetMetadata (self, ret):
-		cb_val, cb_err = dbus_cb_func.pop (ret)
-		try:
-			dict = ret.value ()
-			if (dict == None):
-				cb_val ({})
-				return
-			cb_val (convert_dict (dict))
-		except Exception, err:
-			program_error (cb_err, err)
+		dict = ret.value ()
+		if (dict == None):
+			return {}
+		return convert_dict (dict)
 
 
 	@dbus.service.method (MEDIAPLAYER, out_signature='i')
@@ -304,23 +321,19 @@ class mpris_Player (dbus.service.Object):
 	@dbus.service.method (MEDIAPLAYER, out_signature='i',
 	                      async_callbacks=('cb_val', 'cb_err'))
 	def VolumeGet (self, cb_val, cb_err):
-		res = client.xmms2.playback_volume_get (self._cb_VolumeGet)
-		dbus_cb_func[res] = (cb_val, cb_err)
+		client.xmms2.playback_volume_get (cb=dbus_ret (self._cb_VolumeGet, cb_val, cb_err))
 
 	def _cb_VolumeGet (self, res):
-		cb_val, cb_err = dbus_cb_func.pop (res)
 		try:
 			res = res.value ()
 			if (res.has_key ('master')):
 				self.onechannel = True
-				cb_val (res['master'])
+				return res['master']
 			else:
 				self.onechannel = False
-				cb_val ((res['left']+res['right'])/2)
+				return ((res['left']+res['right'])/2)
 		except KeyError:
-			cb_err("could not get volume, volume keys: " + str(res.keys ()))
-		except Exception, err:
-			program_error (cb_err, err)
+			raise dbusErrorMessage ("could not get volume, volume keys: " + str(res.keys ()))
 
 
 	@dbus.service.method (MEDIAPLAYER, in_signature='i')
@@ -331,15 +344,10 @@ class mpris_Player (dbus.service.Object):
 	@dbus.service.method (MEDIAPLAYER, out_signature='i',
 	                      async_callbacks=('cb_val', 'cb_err'))
 	def PositionGet (self, cb_val, cb_err):
-		res = client.xmms2.playback_playtime (self._cb_PositionGet)
-		dbus_cb_func[res] = (cb_val, cb_err)
+		client.xmms2.playback_playtime (cb=dbus_ret (self._cb_PositionGet, cb_val, cb_err))
 
 	def _cb_PositionGet (self, res):
-		cb_val, cb_err = dbus_cb_func.pop(res)
-		try:
-			cb_val (res.value ())
-		except Exception, err:
-			program_error (cb_err, err)
+		return res.value ()
 
 	#Signals
 	@dbus.service.signal (MEDIAPLAYER, signature='a{sv}')
