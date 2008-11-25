@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-#  xmms2-mpris - MPRIS interface for XMMS2
+#  xmms2-mpris-bridge - MPRIS interface for XMMS2
 #  Copyright (C) Thomas Frauendorfer 2008
 #
 #  This library is free software; you can redistribute it and/or
@@ -29,7 +29,7 @@ MEDIAPLAYER = "org.freedesktop.MediaPlayer"
 # The name reported to dbus
 DBUS_CLIENTNAME = "XMMS2"
 # The name reported to xmms2, only alphanumeric caracters
-XMMS2_CLIENTNAME = 'MPRIS_connection'
+XMMS2_CLIENTNAME = 'MPRIS_bridge'
 
 NONE                 = 0
 CAN_GO_NEXT          = 1 << 0
@@ -56,7 +56,7 @@ DBUS_REPEAT_PL_ON  = 1
 
 # Some general functions
 def program_error (cb_func, Exception):
-	cb_func ("Internal XMMS2-MPRIS error: " + str (Exception))
+	cb_func ("Internal MPRIS-bridge error: " + str (Exception))
 
 #TODO: Add additional fields as soon as xmms2 provides them
 def convert_dict (dict):
@@ -95,7 +95,7 @@ def dbus_ret (func, cb_val, cb_err):
 		except dbusErrorMessage, err:
 			cb_err (str (err))
 		except Exception, err:
-			cb_err ("Internal XMMS2-MPRIS error: " + str (err))
+			cb_err ("Internal MPRIS-bridge error: " + str (err))
 	return wrapper
 
 
