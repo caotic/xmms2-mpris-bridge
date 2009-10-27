@@ -206,9 +206,15 @@ class mpris_TrackList (dbus.service.Object):
 	@dbus.service.method (MEDIAPLAYER, in_signature="b")
 	def SetLoop (self, loop):
 		if loop:
-			client.xmms2.config_set_value ("playlist.repeat_all", "1")
+			try:
+				client.xmms2.config_set_value ("playlist.repeat_all", "1")
+			except AttributeError:
+				client.xmms2.configval_set ("playlist.repeat_all", "1")
 		else:
-			client.xmms2.config_set_value ("playlist.repeat_all", "0")
+			try:
+				client.xmms2.config_set_value ("playlist.repeat_all", "0")
+			except AttributeError:
+				client.xmms2.configval_set ("playlist.repeat_all", "0")
 
 	#TODO: currently not possible, because sorting won't work
 	@dbus.service.method (MEDIAPLAYER, in_signature="b")
@@ -244,11 +250,11 @@ class mpris_TrackList (dbus.service.Object):
 
 	def _cb_handle_current_pos (self, res):
 		pos_d = res.value ()
-		if pos_d == None:
+		try:
+			if self.active_name == pos_d['name']:
+				self.current_pos = pos_d['position']
+		except TypeError:				
 			self.current_pos = 0
-			return
-		if self.active_name == pos_d['name']:
-			self.current_pos = pos_d['position']
 
 
 # MPRIS "/Player" handler class
@@ -269,8 +275,14 @@ class mpris_Player (dbus.service.Object):
 		xmms2.playback_current_id (cb=self._cb_current_id)
 		xmms2.broadcast_playback_current_id (cb=self._cb_current_id)
 		xmms2.broadcast_medialib_entry_changed (cb=self._cb_entry_changed)
-		xmms2.config_list_values (cb=self._cb_handle_repeat)
-		xmms2.broadcast_config_value_changed (cb=self._cb_repeat_changed)
+		try:
+			xmms2.config_list_values (cb=self._cb_handle_repeat)
+		except AttributeError:
+			xmms2.configval_list (cb=self._cb_handle_repeat)
+		try:
+			xmms2.broadcast_config_value_changed (cb=self._cb_repeat_changed)
+		except AttributeError:
+			xmms2.broadcast_configval_changed (cb=self._cb_repeat_changed)
 		xmms2.playback_status (cb=self._cb_playback_status)
 		xmms2.broadcast_playback_status (cb=self._cb_playback_status)
 
@@ -300,9 +312,15 @@ class mpris_Player (dbus.service.Object):
 	@dbus.service.method (MEDIAPLAYER, in_signature='b')
 	def Repeat(self, repeat):
 		if repeat:
-			client.xmms2.config_set_value ("playlist.repeat_one", "1")
+			try:
+				client.xmms2.config_set_value ("playlist.repeat_one", "1")
+			except AttributeError:
+				client.xmms2.configval_set ("playlist.repeat_one", "1")
 		else:
-			client.xmms2.config_set_value ("playlist.repeat_one", "0")
+			try:
+				client.xmms2.config_set_value ("playlist.repeat_one", "0")
+			except AttributeError:
+				client.xmms2.configval_set ("playlist.repeat_one", "0")
 
 	@dbus.service.method (MEDIAPLAYER, out_signature='(iiii)')
 	def GetStatus(self):
