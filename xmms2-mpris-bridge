@@ -31,14 +31,19 @@ IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 POSSIBILITY OF SUCH DAMAGE.
 """
 
-import xmmsclient
-import xmmsclient.glib
-from xmmsclient.consts import *
-import dbus
-import dbus.service
-from dbus.mainloop.glib import DBusGMainLoop
-import gobject
 import sys
+try:
+	import xmmsclient
+	import xmmsclient.glib
+	from xmmsclient.consts import *
+	import dbus
+	import dbus.service
+	from dbus.mainloop.glib import DBusGMainLoop
+	import gobject
+except ImportError:
+	print "Could not start the XMMS2 MPRIS bridge."
+	print "Please install python bindings for xmms2, dbus and gobject"
+	sys.exit(1)
 
 MPRIS = "org.mpris.xmms2"
 MEDIAPLAYER = "org.freedesktop.MediaPlayer"
