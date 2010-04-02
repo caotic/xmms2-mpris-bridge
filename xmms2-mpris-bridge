@@ -144,19 +144,20 @@ class mpris_root (dbus.service.Object):
 
 # MPRIS "/TrackList" handler class
 class mpris_TrackList (dbus.service.Object):
-	def __init__ (self, xmms2):
+	def __init__ (self, xmms2, player):
 		dbus.service.Object.__init__ (self, dbus.SessionBus(), "/TrackList")
 		self.xmms2 = xmms2
 		self.playlist = [] # will be set afterwards
 		self.current_pos = 0
 		self.active_name =""
+		self.player = player
 		xmms2.playlist_current_active (self._cb_handle_pls_name)
 		xmms2.broadcast_playlist_loaded (cb=self._cb_handle_pls_name)
 #		xmms2.playlist_list_entries (cb=self._cb_handle_playlist) #done in _cb_handle_pls_name
 		xmms2.broadcast_playlist_changed (cb=self._cb_fetch_playlist)
 #		xmms2.playlist_current_pos (cb=self._cb_handle_current_pos) # done in _cb_handle_playlist
 		xmms2.broadcast_playlist_current_pos (cb=self._cb_handle_current_pos)
-
+		#xmms2.playback_status (cb=self._cb_playback_status)
 
 	@dbus.service.method (MEDIAPLAYER, in_signature='i', out_signature='a{sv}', \
 	                       async_callbacks=('cb_val', 'cb_err'))
@@ -205,6 +206,16 @@ class mpris_TrackList (dbus.service.Object):
 		else:
 			return 0
 
+	@dbus.service.method (MEDIAPLAYER, in_signature="i", out_signature="i")
+	def PlayTrack (self, pos):
+		if pos <= len (self.playlist):
+			self.xmms2.playlist_set_next (pos)
+			self.xmms2.playback_tickle ()
+			if self.player.playstatus != DBUS_PLAY:
+				self.xmms2.playback_start ()
+			return 1
+		else:
+			return 0
 
 	@dbus.service.method (MEDIAPLAYER, in_signature="i")
 	def DelTrack (self, pos):
@@ -495,8 +506,9 @@ class Xmms2MPRIS:
 		dbus.SessionBus().request_name (MPRIS);
 
 		self.mpris_root = mpris_root (self.xmms2)
-		self.mpris_tracklist = mpris_TrackList (self.xmms2)
 		self.mpris_player = mpris_Player (self.xmms2)
+		self.mpris_tracklist = mpris_TrackList (self.xmms2, self.mpris_player)
+
 
 	def	_on_server_quit(self, result):
 		self.ml.quit ()
